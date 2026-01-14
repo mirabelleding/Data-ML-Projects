@@ -1,0 +1,225 @@
+## Monte Carlo Simulation and Optimization for Profit Maximization and Revenue Modeling
+### Author: Mirabelle Ding
+
+**Objective**: Develop a comprehensive framework that employs Monte Carlo simulation for modeling uncertain inputs, enhancing profit maximization strategies, and supporting informed decision-making in revenue forecasting.<br />	
+<br />
+**Methodology**:<br />
+	•	Created a data frame incorporating uncertain inputs with discrete distributions for demand, fixed costs, and variable costs.<br />
+	•	Implemented revenue modeling functions to calculate total revenue, total costs, and net profit based on varying production quantities.<br />
+	•	Conducted simulations to visualize net profit distributions and optimize profit based on mean, 10th percentile, and probability of achieving target profits.<br />
+	•	Utilized ggplot2 for data visualization, generating histograms, line plots, and density plots to analyze profit trends and distributions.<br />
+<br />
+**Skills Utilized**: Monte Carlo simulation, risk analysis, statistical modeling, Optimization Algorithms (NLOPT, DEoptim), R Programming (dplyr, ggplot2, tidyr, MASS, extraDistr), Data visualization, Probability analysis and distribution fitting
+
+```{r setup, include=TRUE,message=TRUE}
+library(dplyr)
+library(tidyr)
+library(EnvStats)
+library(ggplot2)
+library(fitdistrplus)
+library(MASS)
+library(tidyverse)
+library(MultiRNG)
+library(DEoptim)
+library(nloptr)
+library(extraDistr)
+library(Matrix)
+```
+### Uncertain Inputs with Discrete Distribution	
+
+|Demand         |Probability|
+|--------------:|----------:|
+| 2,000 -  5,000|        30%|
+| 5,001 - 10,000|        45%|
+|10,001 - 14,000|        20%|
+|14,001 - 15,000|	        5%|
+
+
+
+**Data Frame Creation**
+```{r}
+n <- 100000
+demand_range <- list(c(2000,5000),c(5001,10000),c(10001,14000),c(14001,15000))
+demand_probs <- c(0.3, 0.45, 0.2, 0.05)
+
+demand_values <- sample(
+  unlist(lapply(1:length(demand_range), function(i) {
+    sample(seq(demand_range[[i]][1], demand_range[[i]][2]), size = n * demand_probs[i], replace = TRUE)
+  })),
+  size = n,
+  replace = TRUE
+)
+fixed_costs <- rnorm(n, mean = 300000000, sd = 60000000)
+variable_costs <- rtri(n, min = 77000, mode = 90000, max = 100000)
+
+df <- data.frame(
+  Demand = demand_values,
+  Fixed_Costs = fixed_costs,
+  Variable_Costs = variable_costs
+)
+head(df)
+```
+
+
+**Revenue Modelling**
+```{r}
+profit <- function(production_q) {
+  df %>%
+    mutate(
+      Units_Full_Price = pmin(Demand, production_q),
+      Units_Discounted = pmax(0, production_q - Demand),
+      Total_Revenue = (Units_Full_Price * 150000) + (Units_Discounted * 75000),
+      Total_Variable_Cost = production_q * Variable_Costs,
+      Total_Cost = Fixed_Costs + Total_Variable_Cost,
+      Net_Profit = Total_Revenue - Total_Cost
+    )
+}
+
+resultb <- profit(4000)
+
+head(resultb)
+```
+
+**Net Profit Visualization**
+```{r}
+production_q <- c(4000,8000,12000,15000)
+
+resultc <- lapply(production_q, function(q){
+  result <-profit(q)
+  mean_profit <- mean(resultb$Net_Profit)
+  sd_profit <- sd(resultb$Net_Profit)
+
+  cat("Production Quantity:", q, "\n",
+  "Mean Net Profit:", mean_profit, "\n",
+  "Standard Deviation of Net Profit:", sd_profit)  
+  
+ggplot(result, aes(x = Net_Profit)) +
+  geom_histogram(binwidth = 100000) 
+})
+
+
+
+print(resultc[1:4])
+```
+
+
+**Line&Ribbon Plot**
+
+```{r}
+n <- 1e4
+fp <- 150e3
+dp <- 75e3
+pqty <- seq(2000,15000,1000)
+
+qbp<-function(p,probs,ints){
+  ifelse(p<probs[1],
+         qunif(p/probs[1],ints[1],ints[2]),
+         qbp(p-probs[1],probs[-1],ints[-1]))
+}
+rbp<-function(n,probs,ints)
+  replicate(n=n,
+            qbp(p=runif(1),
+                probs=probs,
+                ints=ints))
+
+sim <- data.frame(
+  vc = rtriang(n, a = 77e3,b=100e3,c=90e3), #varible cost
+  fc = rnorm(n,300e6,60e6), #fixed cost
+  dem = rbp(n,probs = c(.3,.45,.2,.05),ints = c(2e3,5e3,10e3,14e3,15e3))%>% #demand
+    round()
+)
+
+profit_vec <- function(pqty){
+  sim <- sim %>%
+    mutate(
+      sold_fp = pmin(dem,pqty),
+      sold_dp = pqty - sold_fp,
+      tot_rev = fp*sold_fp + dp*sold_dp,
+      tot_cost = fc + vc * pqty,
+      profit = tot_rev - tot_cost
+    )
+  return(sim$profit)
+}
+
+profit_stats <- function(pqty){
+  x <- profit_vec(pqty)
+  return(
+    c(pqty = pqty,
+      m = mean(x),
+      quantile(x,c(.005,.1,.9,.995)))
+  )
+}
+
+trend_plot_df <-
+  sapply(pqty, profit_stats) %>%
+  t()%>%
+  as.data.frame()
+
+colnames(trend_plot_df) <-c("pqty","m","l99","l80","u80","u99")
+
+ggplot(trend_plot_df) +
+  geom_point(aes(x = pqty, y = m)) +
+  geom_line(aes(x = pqty, y = m)) +
+  geom_ribbon(aes(x = pqty, ymin = l80, ymax = u80),
+              alpha = 0.3) +
+  geom_ribbon(aes(x = pqty, ymin =l99, ymax = u99),
+              alpha = 0.3) +
+  labs(x = "pqty", y = "mean profit") +
+  theme_minimal()
+```
+
+
+
+**Density Plot**
+
+```{r}
+pqty_b <- seq(2000,14000,2000)
+
+overlap_dens_plot <- sapply(pqty_b,profit_vec) %>% as.data.frame()
+colnames(overlap_dens_plot) <- paste0("pqty",pqty_b) 
+
+overlap_dens_plot <- overlap_dens_plot %>%
+  pivot_longer(everything())
+
+ggplot(overlap_dens_plot) +
+  geom_density(aes(x = value, fill = factor(name), group = name)) +
+  theme_minimal() +
+  labs(x = "Profit",
+       y = "Density") +
+    scale_fill_discrete(name = "pqty")
+
+```
+
+
+**Profit Optimization Simulation**
+
+```{r}
+mean_profit <- function(pqty)
+  profit_vec(pqty)%>% mean()
+
+opt_mean<- optimize(f = mean_profit,
+         interval = c(2000,15000),
+         maximum = T)
+cat("i. Producing",opt_mean$maximum,"will maximize GWS' expected profit, 
+    which is",opt_mean$objective)
+
+#ii.
+q10_profit <- function(pqty)
+   quantile(profit_vec(pqty),.1)
+
+opt_q10<- optimize(f = q10_profit,
+                    interval = c(2000,15000),
+                    maximum = T)
+cat("\nii. Producing",opt_q10$maximum,"will maximize GWS' 10th percentile profit, 
+    which is",opt_q10$objective)
+
+#iii
+prob_50m <- function(pqty)
+  mean(profit_vec(pqty) > 50e6)
+
+opt_50m<- optimize(f = prob_50m,
+                   interval = c(2000,15000),
+                   maximum = T)
+cat("\niii. Producing",round(opt_50m$maximum),"will maximize GWS' probability of earning 
+  at least 50 million profit, which is",opt_50m$objective)
+```
